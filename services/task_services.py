@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 from fastapi import HTTPException
+from sqlmodel import Session, select
+
+from models.task_models import Task
 
 try:
     from ..schemas.task_schema import TaskCreate, TaskUpdate
@@ -10,58 +13,67 @@ except ImportError:
 
 TASKS_FILE = Path(__file__).resolve().parents[1] / "tasks.json"
 
+
 class TaskServices:
     @staticmethod
-    async def get_tasks(owner: str | None = None,
+    async def get_tasks(session: Session,
+                        owner: str | None = None,
                         status: str | None = None,
                         skip: int = 0,
                         limit: int | None = None):
-        dados = await TaskServices.ler_arquivo_json()
-        tasks_list = dados["tasks"]
+        declaracao = select(Task)
+        if owner is not None:
+            declaracao = declaracao.where(Task.owner.contains(owner))
+        if status is not None:
+            declaracao = declaracao.where(Task.status == status.lower())
 
-        filtered_tasks = [
-            task for task in tasks_list
-            if (owner is None or owner.lower() in task["owner"].lower())
-            and (status is None or status.lower() in task["status"].lower())
-        ]
+        declaracao = declaracao.offset(skip)
+        if limit is not None:
+            declaracao = declaracao.limit(limit)
 
-        if limit is None:
-            return filtered_tasks[skip:]
-        return filtered_tasks[skip:skip + limit]
+        return session.exec(declaracao).all()
 
+    # use essa doc como exemplo para fazer a criação no banco(https://fastapi.tiangolo.com/tutorial/sql-databases/#read-one-hero) 
     @staticmethod
-    async def get_tasks_by_id(id: int):
-        response_tasks = await TaskServices.ler_arquivo_json()
-        tasks_list = response_tasks["tasks"]
-        task = next((item for item in tasks_list if item["id"] == id), None)
-        if task is None:
+    async def get_tasks_by_id(session: Session, id: int):
+        task = session.get(Task, id)
+        if not task:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
 
+    # use essa doc como exemplo para fazer a criação no banco(https://fastapi.tiangolo.com/tutorial/sql-databases/#create-a-hero) 
     @staticmethod
-    async def create_task(task: TaskCreate):
-        tasks = await TaskServices.ler_arquivo_json()
-        last_id = tasks["tasks"][-1]["id"] if tasks["tasks"] else 0
-        new_task = task.model_dump()
-        new_task["id"] = last_id + 1
-        tasks["tasks"].append(new_task)
-        with TASKS_FILE.open("w", encoding="utf-8") as f:
-            json.dump(tasks, f, ensure_ascii=False, indent=4)
+    async def create_task(session: Session, task: TaskCreate)-> Task:
+        new_task = Task(**task.model_dump(mode="json")) 
+        session.add(new_task)
+        session.commit()
+        session.refresh(new_task)
         return new_task
 
+    # use essa doc como exemplo para fazer a criação no banco(https://fastapi.tiangolo.com/tutorial/sql-databases/#delete-a-hero) 
     @staticmethod
-    async def delete_task(id: int):
-        tasks_data = await TaskServices.ler_arquivo_json()
-        task_exists = any(item["id"] == id for item in tasks_data["tasks"])
-        if not task_exists:
+    async def delete_task(session: Session,id: int):
+        task = session.get(Task, id)
+        if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        tasks_data["tasks"] = [item for item in tasks_data["tasks"] if item["id"] != id]
-        with TASKS_FILE.open("w", encoding="utf-8") as f:
-            json.dump(tasks_data, f, ensure_ascii=False, indent=4)
-        return {"message": "Task deletada com sucesso"}
+        session.delete(task)
+        session.commit()
+        return {"ok": True}
+        
 
+    #use essa doc como exemplo para fazer a criação no banco(https://fastapi.tiangolo.com/tutorial/sql-databases/#update-a-hero-with-heroupdate)
     @staticmethod
-    async def update_task(id: int, task: TaskUpdate):
+    async def update_task(session: Session, id: int, task: TaskUpdate):
+        db_task = session.get(Task,id)
+        if not db_task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        task_data = task.model_dump(exclude_unset=True)
+        db_task.sqlmodel_update(task_data)
+        session.add(db_task)
+        session.commit()
+        session.refresh(db_task)
+        return db_task
         tasks_data = await TaskServices.ler_arquivo_json()
         tasks_list = tasks_data["tasks"]
         index = next((i for i, item in enumerate(tasks_list) if item["id"] == id), None)
